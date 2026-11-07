@@ -52,6 +52,7 @@ data class FeatheredUiState(
     val isFeedLoading: Boolean = false,
     val videoPosts: List<Post> = emptyList(),
     val isVideosLoading: Boolean = false,
+    val selectedVideoPostId: Long? = null,
     val sponsoredFeedAds: List<SponsoredFeedAd> = emptyList(),
     val isFeedAdsLoading: Boolean = false,
     val userProfilePosts: Map<Long, List<Post>> = emptyMap(),
@@ -3438,6 +3439,18 @@ class FeatheredViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setSelectedProductForDetail(product: Product?) {
         _uiState.update { it.copy(selectedProductForDetail = product) }
+    }
+
+    fun openVideoReel(post: Post) {
+        _uiState.update { state ->
+            val existing = state.videoPosts
+            val updated = if (existing.any { it.id == post.id }) existing else listOf(post) + existing
+            state.copy(
+                selectedVideoPostId = post.id,
+                videoPosts = updated,
+                currentScreen = Screen.REELS
+            )
+        }
     }
 
     fun openProductById(pid: Long) {

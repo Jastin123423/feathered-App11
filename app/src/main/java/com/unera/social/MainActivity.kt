@@ -330,8 +330,13 @@ fun FeatheredApp(
                             viewModel.setScreen(Screen.GROUPS)
                         },
                         onJoinGroup = { viewModel.joinGroup(it) },
-                        onRsvpEvent = { id, target, prev -> viewModel.rsvpEvent(id, target, prev) },
-                        onOpenVideos = { viewModel.setScreen(Screen.REELS) },
+                        onOpenVideos = { post ->
+                            if (post != null) {
+                                viewModel.openVideoReel(post)
+                            } else {
+                                viewModel.setScreen(Screen.REELS)
+                            }
+                        },
                         onDeletePost = { viewModel.deletePost(it) },
                         onEditPost = { id, text -> viewModel.editPost(id, text) },
                         onHidePost = { viewModel.hidePost(it) },
@@ -360,6 +365,7 @@ fun FeatheredApp(
                 Screen.REELS -> {
                     ReelsScreen(
                         posts = if (uiState.videoPosts.isNotEmpty()) uiState.videoPosts else uiState.posts,
+                        initialPostId = uiState.selectedVideoPostId,
                         ads = uiState.sponsoredFeedAds,
                         reels = uiState.reels,
                         currentUser = uiState.currentUser,

@@ -140,6 +140,7 @@ private fun downloadOriginalVideo(context: Context, url: String, title: String) 
 @Composable
 fun ReelsScreen(
     posts: List<Post> = emptyList(),
+    initialPostId: Long? = null,
     ads: List<SponsoredFeedAd> = emptyList(),
     reels: List<Reel> = emptyList(),
     currentUser: User? = null,
@@ -319,7 +320,23 @@ fun ReelsScreen(
                 }
             }
         } else if (mixedVideos.isNotEmpty()) {
-            val pagerState = rememberPagerState(pageCount = { mixedVideos.size })
+            val initialIndex = remember(mixedVideos, initialPostId) {
+                if (initialPostId != null) {
+                    val idx = mixedVideos.indexOfFirst { it.id == initialPostId }
+                    if (idx >= 0) idx else 0
+                } else 0
+            }
+
+            val pagerState = rememberPagerState(
+                initialPage = initialIndex,
+                pageCount = { mixedVideos.size }
+            )
+
+            LaunchedEffect(initialIndex, mixedVideos.size) {
+                if (initialIndex in 0 until mixedVideos.size && pagerState.currentPage != initialIndex) {
+                    pagerState.scrollToPage(initialIndex)
+                }
+            }
 
             VerticalPager(
                 state = pagerState,
