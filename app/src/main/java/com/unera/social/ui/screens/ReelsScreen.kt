@@ -1,45 +1,65 @@
 package com.unera.social.ui.screens
 
+import android.app.DownloadManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.util.Log
+import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
+import com.unera.social.R
 import com.unera.social.data.VideosApiService
 import com.unera.social.model.*
-import com.unera.social.ui.components.InstagramVideoCard
-import com.unera.social.ui.theme.*
+import com.unera.social.ui.components.FacebookReactionDock
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-// Web Palette Constants matching VideosPage.tsx
-private val WebDarkBg = Color(0xFF0B1120)
-private val WebCardBg = Color(0xFF0F172A)
-private val WebBorder = Color(0xFF1E293B)
-private val WebBlue = Color(0xFF1877F2)
-private val WebSkyBlue = Color(0xFF38BDF8)
-private val WebTextPrimary = Color(0xFFF8FAFC)
-private val WebTextSecondary = Color(0xFF94A3B8)
-private val WebTextMuted = Color(0xFF64748B)
-
-private const val VIDEOS_PER_PAGE = 15
 
 data class VideoItem(
     val id: String,
@@ -59,17 +79,63 @@ data class VideoItem(
     val originalReel: Reel? = null
 )
 
+private val FbBlue = Color(0xFF1877F2)
+private val FbRedBadge = Color(0xFFE41E3F)
+private val HeartRed = Color(0xFFF43F5E)
+
+private fun formatNumber(count: Int): String {
+    if (count <= 0) return "0"
+    if (count >= 1_000_000) {
+        val f = "%.1f".format(java.util.Locale.US, count / 1_000_000.0)
+        return if (f.endsWith(".0")) "${f.substringBefore(".0")}M" else "${f}M"
+    }
+    if (count >= 1_000) {
+        val f = "%.1f".format(java.util.Locale.US, count / 1_000.0)
+        return if (f.endsWith(".0")) "${f.substringBefore(".0")}K" else "${f}K"
+    }
+    return count.toString()
+}
+
+private fun formatVideoTime(millis: Long): String {
+    if (millis <= 0L) return "0:00"
+    val totalSeconds = (millis / 1000).coerceAtLeast(0)
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%d:%02d".format(minutes, seconds)
+}
+
 /**
- * VideosPage / ReelsScreen - Native 1:1 Implementation of web VideosPage.tsx
- *
- * 1. Clean header (Back button + 'Videos' title).
- * 2. Real data from live backend:
- *    - Ads fetched via GET /api/ads/feeds (if ads prop is empty)
- *    - Videos extracted from live feed/posts (media_type == 'video' || resolvable video URL)
- *    - Zero demo or mock video data
- * 3. Mixed organic and sponsored items with anti-clustering spacing.
- * 4. 15 videos per page with full pagination controls.
- * 5. Full native interaction callbacks wired (React, Discuss, Share, Follow, Profile, Story).
+ * Downloads the original untouched video file using Android DownloadManager.
+ * Strictly adheres to reserving the original URL for explicit downloads.
+ */
+private fun downloadOriginalVideo(context: Context, url: String, title: String) {
+    if (url.isBlank()) {
+        Toast.makeText(context, "Download link unavailable", Toast.LENGTH_SHORT).show()
+        return
+    }
+    try {
+        val request = DownloadManager.Request(Uri.parse(url))
+            .setTitle(title.ifBlank { "Original Video" })
+            .setDescription("Downloading original high-resolution video…")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "video_${System.currentTimeMillis()}.mp4")
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        dm.enqueue(request)
+        Toast.makeText(context, "Downloading original video…", Toast.LENGTH_SHORT).show()
+    } catch (_: Exception) {
+        try {
+            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            context.startActivity(browserIntent)
+        } catch (_: Exception) {
+            Toast.makeText(context, "Could not start download", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+/**
+ * Professional Full-Screen Facebook Watch & Reels Video Experience
  */
 @Composable
 fun ReelsScreen(
@@ -90,16 +156,16 @@ fun ReelsScreen(
     onSavePost: ((Long) -> Unit)? = null,
     onBack: (() -> Unit)? = null,
     onRefresh: (() -> Unit)? = null,
-    // Backward compatibility parameter aliases
-    onLikePost: ((Long) -> Unit)? = null,
-    onCommentPost: ((Post) -> Unit)? = null,
-    onUserClick: ((User) -> Unit)? = null,
+    onNavigate: ((Screen) -> Unit)? = null,
+    onOpenNotifications: (() -> Unit)? = null,
+    onOpenMenu: (() -> Unit)? = null,
+    unreadNotificationsCount: Int = 2,
+    unreadMessagesCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
-    var currentPage by remember { mutableIntStateOf(1) }
     val coroutineScope = rememberCoroutineScope()
 
-    // 1. Direct fetch for sponsored ads: GET /api/ads/feeds (VideosPage.tsx parity)
+    // 1. Fetch live sponsored feed ads if empty
     var internalAds by remember { mutableStateOf<List<SponsoredFeedAd>>(ads) }
     LaunchedEffect(ads) {
         if (ads.isNotEmpty()) {
@@ -108,14 +174,11 @@ fun ReelsScreen(
         }
         coroutineScope.launch {
             val fetched = VideosApiService.fetchFeedAds()
-            if (fetched.isNotEmpty()) {
-                internalAds = fetched
-            }
+            if (fetched.isNotEmpty()) internalAds = fetched
         }
     }
 
-    // 2. Direct fetch for live videos if posts prop is empty:
-    // Primary: GET /api/feeds?userId={meId}&limit=50, Fallback: GET /api/posts
+    // 2. Fetch live videos from backend if posts list is empty
     var internalPosts by remember { mutableStateOf<List<Post>>(posts) }
     LaunchedEffect(posts) {
         if (posts.isNotEmpty()) {
@@ -124,17 +187,14 @@ fun ReelsScreen(
         }
         coroutineScope.launch {
             val fetched = VideosApiService.fetchVideos(userId = currentUser?.id, limit = 50)
-            if (fetched.isNotEmpty()) {
-                internalPosts = fetched
-            }
+            if (fetched.isNotEmpty()) internalPosts = fetched
         }
     }
 
-    // 3. Extract, normalize, and unify ALL videos from feed posts and reels (No demo videos)
+    // 3. Extract and unify real video items
     val allVideos = remember(internalPosts, reels) {
         val videoMap = LinkedHashMap<String, Post>()
 
-        // Process feed posts that are videos
         internalPosts.forEach { post ->
             val defaultUrl = post.getDefaultPlayableVideoUrl().takeIf { it.isNotBlank() }
             val vUrl = post.videoUrl?.takeIf { it.isNotBlank() }
@@ -162,14 +222,10 @@ fun ReelsScreen(
                                 resolution1080 = post.getHdPlayableVideoUrl().ifBlank { resolvedUrl },
                                 thumb = post.getPosterUrl(),
                                 thumbnailUrl = post.getPosterUrl(),
+                                original = post.getOriginalDownloadUrl().ifBlank { resolvedUrl },
                                 type = "video"
                             )
                         )
-                    }
-                    val finalMediaUrls = if (post.mediaUrls.isNotEmpty()) {
-                        post.mediaUrls
-                    } else {
-                        listOf(resolvedUrl)
                     }
                     videoMap[key] = post.copy(
                         postType = "video",
@@ -177,20 +233,18 @@ fun ReelsScreen(
                         videoUrl = resolvedUrl,
                         mediaUrl = resolvedUrl,
                         mediaMeta = finalMeta,
-                        mediaUrls = finalMediaUrls,
+                        mediaUrls = if (post.mediaUrls.isNotEmpty()) post.mediaUrls else listOf(resolvedUrl),
                         createdAt = post.createdAt ?: post.timestamp
                     )
                 }
             }
         }
 
-        // Process reels (if any real reels exist)
         reels.forEach { reel ->
             val vUrl = reel.videoUrl.takeIf { it.isNotBlank() }
             if (vUrl != null) {
-                val key = vUrl
-                if (!videoMap.containsKey(key)) {
-                    videoMap[key] = Post(
+                if (!videoMap.containsKey(vUrl)) {
+                    videoMap[vUrl] = Post(
                         id = reel.id,
                         author = reel.author,
                         content = reel.caption,
@@ -213,7 +267,7 @@ fun ReelsScreen(
         videoMap.values.toList()
     }
 
-    // 4. Mix organic videos and sponsored ads with anti-clustering spacing
+    // 4. Mix organic videos and sponsored ads
     val mixedVideos = remember(allVideos, internalAds, internalPosts, users) {
         if (internalAds.isEmpty()) {
             allVideos
@@ -231,7 +285,6 @@ fun ReelsScreen(
                 }
             }
 
-            // If allVideos has zero organic items, show live sponsored video/feed ads
             if (allVideos.isEmpty()) {
                 internalAds.forEach { ad ->
                     result.add(transformAdToPost(ad, internalPosts, users))
@@ -242,317 +295,921 @@ fun ReelsScreen(
         }
     }
 
-    // 4. Pagination calculation: 15 videos per page (VIDEOS_PER_PAGE = 15)
-    val totalVideos = mixedVideos.size
-    val totalPages = maxOf(1, (totalVideos + VIDEOS_PER_PAGE - 1) / VIDEOS_PER_PAGE)
-    val startIndex = (currentPage - 1) * VIDEOS_PER_PAGE
-    val endIndex = minOf(startIndex + VIDEOS_PER_PAGE, totalVideos)
-    val currentVideos = if (startIndex < totalVideos) mixedVideos.subList(startIndex, endIndex) else emptyList()
-
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .background(WebDarkBg)
-            .testTag("videos_page_container")
+            .background(Color.Black)
+            .testTag("facebook_video_page")
     ) {
-        // 1. CLEAN VIDEO PAGE HEADER (No Videos icon, No videos posted text, No Post Video button, No Share prompt)
-        if (onBack != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(WebDarkBg)
-                    .border(width = 1.dp, color = WebBorder)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(WebCardBg)
-                            .border(1.dp, WebBorder, RoundedCornerShape(8.dp))
-                            .testTag("videos_back_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = WebTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    Text(
-                        text = "Videos",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = WebTextPrimary
-                    )
-                }
-
-                if (onRefresh != null) {
-                    IconButton(
-                        onClick = onRefresh,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(WebCardBg)
-                            .border(1.dp, WebBorder, RoundedCornerShape(8.dp))
-                            .testTag("videos_refresh_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = "Refresh Videos",
-                            tint = if (isLoading) WebSkyBlue else WebTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-        }
-
-        // 2. VIDEOS STREAM - AUTOPLAY ENABLED
         if (isLoading && mixedVideos.isEmpty()) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(WebDarkBg),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    CircularProgressIndicator(
-                        color = WebBlue,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    CircularProgressIndicator(color = FbBlue, modifier = Modifier.size(40.dp))
                     Text(
-                        text = "Loading live videos…",
-                        color = WebTextSecondary,
-                        fontSize = 13.sp
+                        text = "Loading Facebook Videos…",
+                        color = Color.White,
+                        fontSize = 14.sp
                     )
                 }
             }
-        } else if (currentVideos.isNotEmpty()) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .testTag("videos_feed_list"),
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
-                items(currentVideos, key = { it.id }) { videoPost ->
-                    InstagramVideoCard(
-                        post = videoPost,
-                        currentUser = currentUser,
-                        users = users,
-                        stories = stories,
-                        autoplay = false,
-                        onProfileClick = { authorId ->
-                            if (onProfileClick != null) onProfileClick(authorId)
-                            else onUserClick?.invoke(videoPost.author)
-                        },
-                        onStoryClick = { storyAuthorId ->
-                            onStoryClick?.invoke(storyAuthorId)
-                        },
-                        onReact = { p, type ->
-                            if (onReact != null) onReact(p, type)
-                            else onLikePost?.invoke(p.id)
-                        },
-                        onOpenComments = { p ->
-                            if (onOpenComments != null) onOpenComments(p)
-                            else onCommentPost?.invoke(p)
-                        },
-                        onShare = { postId, count ->
-                            onShare?.invoke(postId, count)
-                        },
-                        onFollow = { authorId ->
-                            onFollow?.invoke(authorId)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(modifier = Modifier.height(1.dp).background(WebBorder))
-                }
+        } else if (mixedVideos.isNotEmpty()) {
+            val pagerState = rememberPagerState(pageCount = { mixedVideos.size })
 
-                // 3. PAGINATION AFTER 15 VIDEOS
-                if (totalPages > 1) {
-                    item {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            color = WebDarkBg,
-                            shape = RoundedCornerShape(16.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, WebBorder)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val startIdx = startIndex + 1
-                                val endIdx = endIndex
-                                Text(
-                                    text = "Showing $startIdx–$endIdx of $totalVideos videos",
-                                    fontSize = 12.sp,
-                                    color = WebTextSecondary
-                                )
+            VerticalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1
+            ) { pageIndex ->
+                val videoPost = mixedVideos[pageIndex]
+                val isActive = pagerState.currentPage == pageIndex
 
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Button(
-                                        onClick = { if (currentPage > 1) currentPage-- },
-                                        enabled = currentPage > 1,
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = WebCardBg,
-                                            contentColor = WebTextPrimary,
-                                            disabledContainerColor = WebCardBg.copy(alpha = 0.5f),
-                                            disabledContentColor = WebTextMuted
-                                        ),
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(30.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.ChevronLeft,
-                                            contentDescription = "Prev",
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(2.dp))
-                                        Text("Prev", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    }
-
-                                    // Page numbers buttons
-                                    for (pageNum in 1..totalPages) {
-                                        if (totalPages > 6 &&
-                                            pageNum != 1 &&
-                                            pageNum != totalPages &&
-                                            kotlin.math.abs(pageNum - currentPage) > 1
-                                        ) {
-                                            if (pageNum == 2 || pageNum == totalPages - 1) {
-                                                Text(
-                                                    text = "…",
-                                                    fontSize = 11.sp,
-                                                    color = WebTextMuted,
-                                                    modifier = Modifier.padding(horizontal = 2.dp)
-                                                )
-                                            }
-                                            continue
-                                        }
-
-                                        val isActive = pageNum == currentPage
-                                        Box(
-                                            modifier = Modifier
-                                                .size(30.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (isActive) WebBlue else WebCardBg)
-                                                .border(1.dp, if (isActive) WebBlue else WebBorder, RoundedCornerShape(8.dp))
-                                                .clickable { currentPage = pageNum },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = pageNum.toString(),
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isActive) Color.White else WebTextSecondary
-                                            )
-                                        }
-                                    }
-
-                                    Button(
-                                        onClick = { if (currentPage < totalPages) currentPage++ },
-                                        enabled = currentPage < totalPages,
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = WebCardBg,
-                                            contentColor = WebTextPrimary,
-                                            disabledContainerColor = WebCardBg.copy(alpha = 0.5f),
-                                            disabledContentColor = WebTextMuted
-                                        ),
-                                        shape = RoundedCornerShape(8.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(30.dp)
-                                    ) {
-                                        Text("Next", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        Spacer(modifier = Modifier.width(2.dp))
-                                        Icon(
-                                            imageVector = Icons.Default.ChevronRight,
-                                            contentDescription = "Next",
-                                            modifier = Modifier.size(12.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                FacebookVideoItemView(
+                    post = videoPost,
+                    isActive = isActive,
+                    currentUser = currentUser,
+                    onReact = { p, type -> onReact?.invoke(p, type) },
+                    onOpenComments = { p -> onOpenComments?.invoke(p) },
+                    onShare = { postId, count -> onShare?.invoke(postId, count) },
+                    onFollow = { authorId -> onFollow?.invoke(authorId) },
+                    onProfileClick = { authorId -> onProfileClick?.invoke(authorId) },
+                    onSavePost = { postId -> onSavePost?.invoke(postId) },
+                    onBack = onBack,
+                    onNavigate = onNavigate,
+                    onOpenNotifications = onOpenNotifications,
+                    onOpenMenu = onOpenMenu,
+                    unreadNotificationsCount = unreadNotificationsCount,
+                    unreadMessagesCount = unreadMessagesCount
+                )
             }
         } else {
-            // Empty State (1:1 Web Parity)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 48.dp, horizontal = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            // Empty State
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(CircleShape)
-                        .background(WebCardBg)
-                        .border(1.dp, WebBorder, CircleShape),
-                    contentAlignment = Alignment.Center
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.padding(24.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Movie,
+                        imageVector = Icons.Default.OndemandVideo,
                         contentDescription = null,
-                        tint = WebSkyBlue,
-                        modifier = Modifier.size(28.dp)
+                        tint = Color.White.copy(alpha = 0.7f),
+                        modifier = Modifier.size(56.dp)
                     )
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "No Videos Available",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = WebTextPrimary
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Videos from the feed and reels will appear here.",
-                    fontSize = 13.sp,
-                    color = WebTextSecondary
-                )
-                if (onRefresh != null) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = onRefresh,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = WebBlue,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Fetch Live Videos", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "No Videos Available",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Videos from your feed and followed creators will appear here.",
+                        fontSize = 14.sp,
+                        color = Color.White.copy(alpha = 0.6f)
+                    )
+                    if (onRefresh != null) {
+                        Button(
+                            onClick = onRefresh,
+                            colors = ButtonDefaults.buttonColors(containerColor = FbBlue)
+                        ) {
+                            Text("Refresh", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
         }
     }
 }
+
+/**
+ * Single Facebook-Style Video Player Item View
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun FacebookVideoItemView(
+    post: Post,
+    isActive: Boolean,
+    currentUser: User?,
+    onReact: (Post, String) -> Unit,
+    onOpenComments: (Post) -> Unit,
+    onShare: (Long, Int) -> Unit,
+    onFollow: (Long) -> Unit,
+    onProfileClick: (Long) -> Unit,
+    onSavePost: (Long) -> Unit,
+    onBack: (() -> Unit)?,
+    onNavigate: ((Screen) -> Unit)?,
+    onOpenNotifications: (() -> Unit)?,
+    onOpenMenu: (() -> Unit)?,
+    unreadNotificationsCount: Int,
+    unreadMessagesCount: Int
+) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // 1. Resolve Quality URLs
+    val posterUrl = remember(post) {
+        val calc = post.getPosterUrl()
+        if (calc.isNotBlank()) calc else post.mediaUrl ?: ""
+    }
+    val defaultVideoUrl = remember(post) { post.getDefaultPlayableVideoUrl() }
+    val hdVideoUrl = remember(post) { post.getHdPlayableVideoUrl() }
+    val originalDownloadUrl = remember(post) { post.getOriginalDownloadUrl() }
+    val hasHdQuality = remember(post) { post.hasHdQuality() }
+
+    var isHdEnabled by remember { mutableStateOf(false) }
+    val activeStreamingUrl = remember(isHdEnabled, defaultVideoUrl, hdVideoUrl) {
+        if (isHdEnabled && hdVideoUrl.isNotBlank()) hdVideoUrl else defaultVideoUrl
+    }
+
+    // 2. Playback & Controller State
+    var isPlaying by remember { mutableStateOf(true) }
+    var isMuted by remember { mutableStateOf(false) }
+    var isVideoReady by remember { mutableStateOf(false) }
+    var isBuffering by remember { mutableStateOf(true) }
+    var currentPositionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf(0L) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var showHeartBurst by remember { mutableStateOf(false) }
+    var isCaptionExpanded by remember { mutableStateOf(false) }
+    var isFollowingState by remember { mutableStateOf(false) }
+
+    // Dynamic reaction state
+    var localLiked by remember(post.isLiked, post.myReaction) {
+        mutableStateOf(post.isLiked || !post.myReaction.isNullOrBlank())
+    }
+    var localLikesCount by remember(post.likesCount) { mutableIntStateOf(post.likesCount) }
+    var showReactionDock by remember { mutableStateOf(false) }
+    var showMoreOptionsSheet by remember { mutableStateOf(false) }
+
+    // ExoPlayer creation & management
+    val exoPlayer = remember(context) {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ALL
+            volume = if (isMuted) 0f else 1f
+        }
+    }
+
+    // Manage MediaItem & Quality Switching
+    LaunchedEffect(activeStreamingUrl) {
+        if (activeStreamingUrl.isNotBlank()) {
+            val currPos = exoPlayer.currentPosition
+            isVideoReady = false
+            isBuffering = true
+            val mediaItem = MediaItem.fromUri(activeStreamingUrl)
+            exoPlayer.setMediaItem(mediaItem)
+            if (currPos > 0) {
+                exoPlayer.seekTo(currPos)
+            }
+            exoPlayer.prepare()
+        }
+    }
+
+    // Attach Player Listener
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        isVideoReady = true
+                        isBuffering = false
+                        durationMs = exoPlayer.duration.coerceAtLeast(0L)
+                    }
+                    Player.STATE_BUFFERING -> {
+                        isBuffering = true
+                    }
+                    Player.STATE_ENDED -> {
+                        isBuffering = false
+                    }
+                    Player.STATE_IDLE -> {
+                        isBuffering = false
+                    }
+                }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e("FacebookVideo", "Playback error on $activeStreamingUrl: ${error.message}")
+                isBuffering = false
+                if (isHdEnabled && defaultVideoUrl.isNotBlank() && activeStreamingUrl != defaultVideoUrl) {
+                    isHdEnabled = false
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            exoPlayer.removeListener(listener)
+            exoPlayer.release()
+        }
+    }
+
+    // Play/Pause syncing with page visibility & user pause
+    LaunchedEffect(isActive, isPlaying) {
+        if (isActive && isPlaying) {
+            exoPlayer.playWhenReady = true
+        } else {
+            exoPlayer.playWhenReady = false
+        }
+    }
+
+    // Volume sync
+    LaunchedEffect(isMuted) {
+        exoPlayer.volume = if (isMuted) 0f else 1f
+    }
+
+    // Scrubber / Position polling loop while active
+    LaunchedEffect(isActive, isPlaying) {
+        while (isActive && isPlaying) {
+            currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
+            if (exoPlayer.duration > 0) {
+                durationMs = exoPlayer.duration
+            }
+            delay(250)
+        }
+    }
+
+    // Auto-hide controls after 3.5 seconds
+    LaunchedEffect(controlsVisible, isPlaying) {
+        if (controlsVisible && isPlaying) {
+            delay(3500)
+            controlsVisible = false
+        }
+    }
+
+    // Scale animation for reaction heart
+    var heartAnimScale by remember { mutableFloatStateOf(1f) }
+    val animatedHeartScale by animateFloatAsState(
+        targetValue = heartAnimScale,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "heartScale"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        controlsVisible = !controlsVisible
+                    },
+                    onDoubleTap = {
+                        // Double-tap bursts heart and toggles reaction
+                        if (!localLiked) {
+                            localLiked = true
+                            localLikesCount++
+                            onReact(post, "love")
+                        }
+                        showHeartBurst = true
+                        coroutineScope.launch {
+                            delay(900)
+                            showHeartBurst = false
+                        }
+                    }
+                )
+            }
+    ) {
+        // 1. VIDEO SURFACE (PRESERVES NATURAL ASPECT RATIO, NO DISTORTION)
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = false
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setBackgroundColor(android.graphics.Color.BLACK)
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // 2. IMMEDIATE THUMBNAIL POSTER (WHILE BUFFERING / INITIAL LOAD)
+        if (!isVideoReady && posterUrl.isNotBlank()) {
+            AsyncImage(
+                model = posterUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+            )
+        }
+
+        // 3. BUFFERING INDICATOR
+        if (isBuffering && isActive) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(44.dp)
+                )
+            }
+        }
+
+        // 4. DOUBLE TAP BURSTING HEART ANIMATION
+        AnimatedVisibility(
+            visible = showHeartBurst,
+            enter = scaleIn(initialScale = 0.3f) + fadeIn(),
+            exit = scaleOut(targetScale = 1.6f) + fadeOut(),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Favorite,
+                contentDescription = null,
+                tint = HeartRed,
+                modifier = Modifier
+                    .size(96.dp)
+                    .shadow(12.dp, CircleShape)
+            )
+        }
+
+        // 5. TOP-LEFT SLEEK CHEVRON BACK BUTTON ("<")
+        if (onBack != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(start = 16.dp, top = 14.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)), CircleShape)
+                        .clickable(onClick = onBack),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ChevronLeft,
+                        contentDescription = "Back",
+                        tint = Color.White,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .offset(x = (-1).dp)
+                    )
+                }
+            }
+        }
+
+        // 6. CENTER CONTROLS (10s REWIND, PLAY/PAUSE, 10s FAST-FORWARD)
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(250)),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(36.dp)
+            ) {
+                // 10s Rewind
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable {
+                            val target = (exoPlayer.currentPosition - 10000L).coerceAtLeast(0L)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                            controlsVisible = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_replay_10),
+                        contentDescription = "Rewind 10s",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                // Play / Pause Circle Button
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .clickable {
+                            isPlaying = !isPlaying
+                            controlsVisible = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(38.dp)
+                    )
+                }
+
+                // 10s Fast-Forward
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable {
+                            val dur = if (exoPlayer.duration > 0) exoPlayer.duration else Long.MAX_VALUE
+                            val target = (exoPlayer.currentPosition + 10000L).coerceAtMost(dur)
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                            controlsVisible = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_forward_10),
+                        contentDescription = "Forward 10s",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+        }
+
+        // 7. BOTTOM SCRIM & METADATA OVERLAYS
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.45f),
+                            Color.Black.copy(alpha = 0.9f)
+                        )
+                    )
+                )
+                .padding(bottom = 12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
+            ) {
+                // Content Row: Creator/Description on left, Interaction Buttons on right
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    // BOTTOM-LEFT CREATOR & DESCRIPTION
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 16.dp, bottom = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Creator Row (Avatar, Name, Verified, Follow Button)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            val authorAvatar = post.author.profileImageUrl.ifBlank {
+                                "https://ui-avatars.com/api/?name=${post.author.name}&background=1877F2&color=fff&bold=true"
+                            }
+
+                            AsyncImage(
+                                model = authorAvatar,
+                                contentDescription = post.author.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .border(1.5.dp, Color.White, CircleShape)
+                                    .clickable { onProfileClick(post.author.id) }
+                            )
+
+                            Text(
+                                text = post.author.name,
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+
+                            Icon(
+                                imageVector = Icons.Default.Public,
+                                contentDescription = "Public",
+                                tint = Color.White.copy(alpha = 0.8f),
+                                modifier = Modifier.size(16.dp)
+                            )
+
+                            // Follow Pill Button
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isFollowingState) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.35f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
+                                modifier = Modifier
+                                    .height(30.dp)
+                                    .clickable {
+                                        isFollowingState = !isFollowingState
+                                        onFollow(post.author.id)
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (isFollowingState) "Following" else "Follow",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Caption / Description
+                        val contentText = post.content.ifBlank { post.sponsoredHeadline }
+                        if (contentText.isNotBlank()) {
+                            val maxLines = if (isCaptionExpanded) Int.MAX_VALUE else 2
+                            Column {
+                                Text(
+                                    text = contentText,
+                                    color = Color.White,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    maxLines = maxLines,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable { isCaptionExpanded = !isCaptionExpanded }
+                                )
+                                if (contentText.length > 60 && !isCaptionExpanded) {
+                                    Text(
+                                        text = "… more",
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
+                                        modifier = Modifier.clickable { isCaptionExpanded = true }
+                                    )
+                                }
+                            }
+                        }
+
+                        // Sponsored Call-to-Action Bar
+                        if (post.isSponsored || post.postType == "sponsored") {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = FbBlue,
+                                modifier = Modifier
+                                    .fillMaxWidth(0.9f)
+                                    .clickable {
+                                        if (post.sponsoredCtaUrl.isNotBlank()) {
+                                            try {
+                                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(post.sponsoredCtaUrl)))
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = post.sponsoredCtaText.ifBlank { "Learn More" },
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.OpenInNew,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // RIGHT-SIDE VERTICAL INTERACTION COLUMN (Compact Spacing, Number on Right of Icon)
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    ) {
+                        // 1. REACT HEART BUTTON (❤️ 1k)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .pointerInput(Unit) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            coroutineScope.launch {
+                                                heartAnimScale = 1.35f
+                                                delay(120)
+                                                heartAnimScale = 1.0f
+                                            }
+                                            localLiked = !localLiked
+                                            localLikesCount = if (localLiked) localLikesCount + 1 else (localLikesCount - 1).coerceAtLeast(0)
+                                            onReact(post, if (localLiked) "love" else "")
+                                        },
+                                        onLongPress = {
+                                            showReactionDock = true
+                                        }
+                                    )
+                                }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (localLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                contentDescription = "React Heart",
+                                tint = if (localLiked) HeartRed else Color.White,
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .scale(animatedHeartScale)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = formatNumber(localLikesCount),
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        // 2. COMMENT / DISCUSS BUTTON (💬 168)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .clickable { onOpenComments(post) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_far_comment),
+                                contentDescription = "Comments",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = formatNumber(post.commentsCount),
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        // 3. SHARE BUTTON (Facing Northeast: ↗ 96)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .clickable { onShare(post.id, post.sharesCount) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = "Share",
+                                tint = Color.White,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .graphicsLayer(rotationZ = -35f)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = formatNumber(post.sharesCount),
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // BOTTOM SCRUBBER & DURATION ROW
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Time Indicator (e.g. 0:02 / 2:13)
+                    Text(
+                        text = "${formatVideoTime(currentPositionMs)} / ${formatVideoTime(durationMs)}",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    // Smooth Video Scrubber
+                    val progressRatio = if (durationMs > 0) (currentPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+                    Slider(
+                        value = progressRatio,
+                        onValueChange = { newRatio ->
+                            val target = (newRatio * durationMs).toLong()
+                            exoPlayer.seekTo(target)
+                            currentPositionMs = target
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(28.dp)
+                    )
+
+                    // HD Quality Indicator Badge (If 1080p exists)
+                    if (hasHdQuality) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (isHdEnabled) FbBlue else Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier
+                                .clickable {
+                                    isHdEnabled = !isHdEnabled
+                                    Toast.makeText(
+                                        context,
+                                        if (isHdEnabled) "1080p HD Streaming Enabled" else "720p Standard Streaming",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .padding(horizontal = 2.dp)
+                        ) {
+                            Text(
+                                text = "HD",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    // Volume Mute / Unmute Toggle
+                    IconButton(
+                        onClick = { isMuted = !isMuted },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                            contentDescription = if (isMuted) "Unmute" else "Mute",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // More Options (`...`)
+                    IconButton(
+                        onClick = { showMoreOptionsSheet = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreHoriz,
+                            contentDescription = "More Options",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // 8. 3D REACTION DOCK POPUP (ON LONG PRESS)
+        if (showReactionDock) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .clickable { showReactionDock = false },
+                contentAlignment = Alignment.Center
+            ) {
+                FacebookReactionDock(
+                    onSelectReaction = { selectedType ->
+                        showReactionDock = false
+                        localLiked = true
+                        localLikesCount++
+                        onReact(post, selectedType)
+                    },
+                    onDismiss = { showReactionDock = false }
+                )
+            }
+        }
+
+        // 9. MORE OPTIONS BOTTOM SHEET MODAL
+        if (showMoreOptionsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showMoreOptionsSheet = false },
+                containerColor = Color(0xFF1E293B),
+                contentColor = Color.White
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .navigationBarsPadding(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Video Options",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    // Download Original Video (Strict rule: Original URL exclusively reserved for download)
+                    ListItem(
+                        headlineContent = { Text("Download Original Video", color = Color.White, fontWeight = FontWeight.SemiBold) },
+                        supportingContent = { Text("Save pristine untouched file to device", color = Color.White.copy(alpha = 0.6f)) },
+                        leadingContent = {
+                            Icon(Icons.Default.Download, contentDescription = null, tint = FbBlue)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.clickable {
+                            showMoreOptionsSheet = false
+                            val targetDownload = originalDownloadUrl.ifBlank { activeStreamingUrl }
+                            downloadOriginalVideo(context, targetDownload, post.content.take(30))
+                        }
+                    )
+
+                    // Video Quality Selector (720p vs 1080p)
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = if (isHdEnabled) "Quality: 1080p HD (Active)" else "Quality: 720p Standard (Active)",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                text = if (hasHdQuality) "Tap to switch resolution" else "Only standard stream available for this video",
+                                color = Color.White.copy(alpha = 0.6f)
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.HighQuality, contentDescription = null, tint = Color.White)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.clickable(enabled = hasHdQuality) {
+                            isHdEnabled = !isHdEnabled
+                            showMoreOptionsSheet = false
+                            Toast.makeText(
+                                context,
+                                if (isHdEnabled) "Switched to 1080p HD" else "Switched to 720p Standard",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    // Save / Bookmark Video
+                    ListItem(
+                        headlineContent = { Text("Save Video", color = Color.White) },
+                        leadingContent = {
+                            Icon(Icons.Default.BookmarkBorder, contentDescription = null, tint = Color.White)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.clickable {
+                            showMoreOptionsSheet = false
+                            onSavePost(post.id)
+                            Toast.makeText(context, "Saved to your bookmarks", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+
+                    // Copy Video Link
+                    ListItem(
+                        headlineContent = { Text("Copy Link", color = Color.White) },
+                        leadingContent = {
+                            Icon(Icons.Default.Link, contentDescription = null, tint = Color.White)
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        modifier = Modifier.clickable {
+                            showMoreOptionsSheet = false
+                            val link = post.videoUrl ?: post.mediaUrl ?: "https://unera.social/posts/${post.id}"
+                            clipboardManager.setText(AnnotatedString(link))
+                            Toast.makeText(context, "Link copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
 
 private fun transformAdToPost(ad: SponsoredFeedAd, posts: List<Post>, users: List<User>): Post {
     val originalPost = posts.find { it.id == ad.id }

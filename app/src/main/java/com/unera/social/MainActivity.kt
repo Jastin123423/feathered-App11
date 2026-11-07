@@ -149,7 +149,7 @@ fun FeatheredApp(
             }
         },
         bottomBar = {
-            if (!uiState.showNotificationsOverlay && !uiState.showSearchDialog && uiState.currentScreen != Screen.SEARCH && uiState.currentScreen != Screen.TERMS && uiState.activeConversationId == null) {
+            if (!uiState.showNotificationsOverlay && !uiState.showSearchDialog && uiState.currentScreen != Screen.SEARCH && uiState.currentScreen != Screen.TERMS && uiState.activeConversationId == null && uiState.currentScreen != Screen.REELS) {
                 Column {
                     if (uiState.currentAudioTrack != null) {
                         GlobalAudioPlayer(
@@ -383,7 +383,12 @@ fun FeatheredApp(
                         onSavePost = { viewModel.toggleSavePost(it) },
                         onBack = { viewModel.setScreen(Screen.FEED) },
                         onRefresh = { viewModel.refreshVideos() },
-                        modifier = screenModifier
+                        onNavigate = { destination -> viewModel.setScreen(destination) },
+                        onOpenNotifications = { viewModel.setShowNotificationsOverlay(true) },
+                        onOpenMenu = { viewModel.setShowMenuOverlay(true) },
+                        unreadNotificationsCount = unreadNotificationsCount,
+                        unreadMessagesCount = unreadMessagesCount,
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
                 Screen.MARKETPLACE -> {

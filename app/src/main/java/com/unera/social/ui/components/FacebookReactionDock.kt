@@ -1,9 +1,9 @@
 package com.unera.social.ui.components
 
+import android.os.Build
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,59 +30,53 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
+import coil.request.ImageRequest
 import com.unera.social.R
 import com.unera.social.model.UserReaction
 import kotlin.math.abs
 
 /**
- * Facebook 3D Reaction Definition
- * Exactly 6 official Facebook 3D reaction emojis: Like, Love, Haha, Wow, Sad, Angry.
+ * Facebook 3D Animated Reaction Definition
  */
 data class FacebookReaction(
     val type: String,
     val label: String,
-    val resId: Int,
+    val gifRes: Int,
     val emoji: String,
     val color: Color
 ) {
-    // Backward-compatible alias for any existing callers referencing gifRes
-    val gifRes: Int get() = resId
+    val resId: Int get() = gifRes
 }
 
 val FACEBOOK_REACTIONS = listOf(
-    FacebookReaction("like", "Like", R.drawable.reaction_fb_3d_like, "👍", Color(0xFF1877F2)),
-    FacebookReaction("love", "Love", R.drawable.reaction_fb_3d_love, "❤️", Color(0xFFF43F5E)),
-    FacebookReaction("haha", "Haha", R.drawable.reaction_fb_3d_haha, "😆", Color(0xFFFBBF24)),
-    FacebookReaction("wow", "Wow", R.drawable.reaction_fb_3d_wow, "😮", Color(0xFFFBBF24)),
-    FacebookReaction("sad", "Sad", R.drawable.reaction_fb_3d_sad, "😢", Color(0xFF38BDF8)),
-    FacebookReaction("angry", "Angry", R.drawable.reaction_fb_3d_angry, "😡", Color(0xFFEA580C))
+    FacebookReaction("like", "Like", R.drawable.reaction_like, "👍", Color(0xFF1877F2)),
+    FacebookReaction("love", "Love", R.drawable.reaction_love, "❤️", Color(0xFFF43F5E)),
+    FacebookReaction("care", "Care", R.drawable.reaction_care, "🥰", Color(0xFFF59E0B)),
+    FacebookReaction("haha", "Haha", R.drawable.reaction_haha, "😆", Color(0xFFFBBF24)),
+    FacebookReaction("wow", "Wow", R.drawable.reaction_wow, "😮", Color(0xFFFBBF24)),
+    FacebookReaction("sad", "Sad", R.drawable.reaction_sad, "😢", Color(0xFFFBBF24)),
+    FacebookReaction("angry", "Angry", R.drawable.reaction_angry, "😡", Color(0xFFEA580C))
 )
 
 fun getFacebookReaction(type: String?): FacebookReaction? {
     if (type.isNullOrBlank()) return null
-    val match = FACEBOOK_REACTIONS.find { it.type.equals(type, ignoreCase = true) }
-    if (match != null) return match
-    // Graceful fallback for legacy 'care' reaction
-    if (type.equals("care", ignoreCase = true)) return FACEBOOK_REACTIONS.find { it.type == "love" }
-    return null
+    return FACEBOOK_REACTIONS.find { it.type.equals(type, ignoreCase = true) }
 }
 
 /**
- * Facebook 3D Animated / Movable Reactions Dock
+ * Facebook 3D Animated Reactions Dock
  *
  * Appears when the user holds / long-presses on the React button.
- * Features:
- * - Exactly 6 high quality 3D Facebook reaction emojis
- * - Dynamic movable 3D animations:
- *   - Hover spring bounce and upward float
- *   - Type-specific living motion (Like rocks, Love beats, Haha bounces, Wow wobbles, Sad sways, Angry shakes)
- *   - Subtle ambient breathing float when resting
- * - Smooth horizontal drag scrubbing with labeled tooltip bubbles
+ * Matches Facebook's exact floating pill dock with 3D animated GIF emojis,
+ * spring bounce animations on hover/focus, smooth horizontal scrubbing, and labeled pill tooltips.
  */
 @Composable
 fun FacebookReactionDock(
@@ -90,6 +84,7 @@ fun FacebookReactionDock(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var hoveredIndex by remember { mutableStateOf<Int?>(null) }
     var dockWidthPx by remember { mutableStateOf(0f) }
 
@@ -111,6 +106,19 @@ fun FacebookReactionDock(
         animationSpec = tween(durationMillis = 180),
         label = "entranceAlpha"
     )
+
+    // Coil ImageLoader configured for animated 3D GIF playback
+    val gifLoader = remember(context) {
+        ImageLoader.Builder(context)
+            .components {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
+            }
+            .build()
+    }
 
     // Floating Dock container
     Surface(
@@ -169,11 +177,11 @@ fun FacebookReactionDock(
                 val isHovered = hoveredIndex == index
                 val isNeighbor = hoveredIndex != null && abs(hoveredIndex!! - index) == 1
 
-                // Wave spring scale animation
+                // Wave spring scale animation - big in good size as requested
                 val scale by animateFloatAsState(
                     targetValue = when {
-                        isHovered -> 1.85f
-                        isNeighbor -> 1.25f
+                        isHovered -> 1.90f
+                        isNeighbor -> 1.28f
                         else -> 1.0f
                     },
                     animationSpec = spring(
@@ -197,85 +205,6 @@ fun FacebookReactionDock(
                     label = "reaction_offset_$index"
                 )
 
-                // Movable 3D Motion Physics via InfiniteTransition
-                val infiniteTransition = rememberInfiniteTransition(label = "motion_$index")
-
-                // Idle ambient breathing float (staggered by index)
-                val ambientFloat by infiniteTransition.animateFloat(
-                    initialValue = -1.5f,
-                    targetValue = 1.5f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 1400 + index * 120, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "ambient_float_$index"
-                )
-
-                // Active motion when hovered
-                val hoverMotionRotation by infiniteTransition.animateFloat(
-                    initialValue = -8f,
-                    targetValue = 8f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 400, easing = LinearEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "hover_rotation_$index"
-                )
-
-                val hoverMotionScale by infiniteTransition.animateFloat(
-                    initialValue = 1.0f,
-                    targetValue = 1.15f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 350, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "hover_scale_$index"
-                )
-
-                val hoverMotionBounce by infiniteTransition.animateFloat(
-                    initialValue = -4f,
-                    targetValue = 4f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 320, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "hover_bounce_$index"
-                )
-
-                val hoverMotionTremor by infiniteTransition.animateFloat(
-                    initialValue = -2.5f,
-                    targetValue = 2.5f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 120, easing = LinearEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "hover_tremor_$index"
-                )
-
-                // Compute specific 3D movement properties based on reaction type
-                val currentRotation = when {
-                    isHovered && reaction.type == "like" -> hoverMotionRotation
-                    isHovered && reaction.type == "sad" -> hoverMotionRotation * 0.4f
-                    isHovered && reaction.type == "wow" -> hoverMotionRotation * 0.6f
-                    else -> 0f
-                }
-
-                val currentPulseScale = when {
-                    isHovered && reaction.type == "love" -> hoverMotionScale
-                    else -> 1.0f
-                }
-
-                val currentBounceY = when {
-                    isHovered && reaction.type == "haha" -> hoverMotionBounce
-                    !isHovered -> ambientFloat
-                    else -> 0f
-                }
-
-                val currentTremorX = when {
-                    isHovered && reaction.type == "angry" -> hoverMotionTremor
-                    else -> 0f
-                }
-
                 Box(
                     contentAlignment = Alignment.BottomCenter,
                     modifier = Modifier
@@ -288,10 +217,7 @@ fun FacebookReactionDock(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .offset(
-                                x = currentTremorX.dp,
-                                y = (offsetY + currentBounceY).dp
-                            )
+                            .offset(y = offsetY.dp)
                             .padding(horizontal = 2.dp)
                     ) {
                         // Tooltip label bubble shown above hovered reaction
@@ -313,18 +239,19 @@ fun FacebookReactionDock(
                             Spacer(modifier = Modifier.height(6.dp))
                         }
 
-                        // High Quality 3D Movable Emoji Icon
+                        // 3D Animated GIF reaction icon - full animated emotion expression in good size
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
-                                .scale(scale * currentPulseScale)
-                                .graphicsLayer {
-                                    rotationZ = currentRotation
-                                },
+                                .size(40.dp)
+                                .scale(scale),
                             contentAlignment = Alignment.Center
                         ) {
-                            Image(
-                                painter = painterResource(id = reaction.resId),
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(reaction.gifRes)
+                                    .crossfade(true)
+                                    .build(),
+                                imageLoader = gifLoader,
                                 contentDescription = reaction.label,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize()
@@ -341,7 +268,7 @@ fun FacebookReactionDock(
  * Facebook Reaction Action Button
  *
  * Tap = Like / Unlike
- * Hold (Long Press) = Shows Facebook 3D Movable Reactions Dock
+ * Hold (Long Press) = Shows Facebook 3D Reaction Dock
  */
 @Composable
 fun FacebookReactionButton(
@@ -354,10 +281,23 @@ fun FacebookReactionButton(
     onToggleReactionDock: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val currentReaction = getFacebookReaction(myReaction)
 
+    val gifLoader = remember(context) {
+        ImageLoader.Builder(context)
+            .components {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
+            }
+            .build()
+    }
+
     Box(modifier = modifier) {
-        // Floating 3D animated movable dock when activated
+        // Floating 3D animated dock when activated
         if (showReactionDock) {
             Box(
                 modifier = Modifier
@@ -399,13 +339,17 @@ fun FacebookReactionButton(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (currentReaction != null) {
-                    // Show active high quality 3D reaction icon
+                    // Show active 3D animated reaction icon
                     Box(
-                        modifier = Modifier.size(22.dp),
+                        modifier = Modifier.size(24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Image(
-                            painter = painterResource(id = currentReaction.resId),
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(currentReaction.gifRes)
+                                .crossfade(true)
+                                .build(),
+                            imageLoader = gifLoader,
                             contentDescription = currentReaction.label,
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
@@ -457,11 +401,9 @@ fun FacebookReactionButton(
 }
 
 /**
- * Facebook 3D Non-Moving Reactions Summary Row for Cards
+ * Facebook Reaction Summary Row for Cards
  *
- * Renders 3 overlapping high quality 3D non-moving reaction emoji icons
- * (Like, Love, Haha, or the post's top reactions) followed by "${count} Reactions".
- * Matches Facebook's exact feed post engagement layout with clean 3D circle badges.
+ * Renders overlapping animated reaction emoji icons followed by "${count} Reactions".
  */
 @Composable
 fun FacebookReactionSummaryRow(
@@ -470,7 +412,19 @@ fun FacebookReactionSummaryRow(
     onOpenReactions: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Determine the 3 reaction types to display
+    val context = LocalContext.current
+    val gifLoader = remember(context) {
+        ImageLoader.Builder(context)
+            .components {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
+            }
+            .build()
+    }
+
     val displayTypes = remember(reactions) {
         if (reactions.isNotEmpty()) {
             val topFromPost = reactions.groupBy { it.type.lowercase() }
@@ -496,7 +450,7 @@ fun FacebookReactionSummaryRow(
             .clickable(onClick = onOpenReactions)
             .padding(vertical = 2.dp)
     ) {
-        // Overlapping 3D non-moving emoji circle icons
+        // Overlapping reaction icons
         Row(
             horizontalArrangement = Arrangement.spacedBy((-5).dp),
             verticalAlignment = Alignment.CenterVertically
@@ -506,14 +460,18 @@ fun FacebookReactionSummaryRow(
                 Box(
                     modifier = Modifier
                         .zIndex((4 - index).toFloat())
-                        .size(19.dp)
+                        .size(20.dp)
                         .clip(CircleShape)
                         .background(Color(0xFF0F172A))
                         .border(1.2.dp, Color(0xFF0B1120), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Image(
-                        painter = painterResource(id = reaction.resId),
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(reaction.gifRes)
+                            .crossfade(true)
+                            .build(),
+                        imageLoader = gifLoader,
                         contentDescription = reaction.label,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
